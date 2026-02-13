@@ -2,6 +2,10 @@
 
 use App\Models\Pista;
 use App\Models\Reserva;
+use Carbon\Exceptions\InvalidFormatException;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Gate;
 use Livewire\Attributes\Computed;
 use Livewire\Component;
 
@@ -34,7 +38,7 @@ new class extends Component
                     ->where('fecha_hora', $fecha)
                     ->first();
                 if ($reserva) {
-                    if ($reserva->user_id == auth()->id()) {
+                    if ($reserva->user_id == Auth::id()) {
                         $tablero[$fecha] = $reserva->id;
                     } else {
                         $tablero[$fecha] = 'O';
@@ -48,26 +52,43 @@ new class extends Component
         return $tablero;
     }
 
-    public function updatePista()
-    {
-        $this->refresh();
-    }
-
     public function reservar($fecha)
     {
         $this->validate([
-            'pista_id' => 'required|exists:pistas,id',
+            'pista_id' => 'required|exists:pistas,id'
         ]);
 
-        if (Reserva::where('pista_id', $this->pista_id)->where('fecha_hora', $fecha)->exists()) {
-            return redirect()->back()->with('error', 'La pista ya está reservada para esa fecha y hora.');
+        try {
+            $fecha = Carbon::createFromFormat('Y-m-d H:i', $fecha);
+
+            if ($fecha->lessThan(now())) {
+                $this->addError('fecha', 'No puedes reservar para una fecha pasada.');
+                return;
+            }
+
+            if ($fecha->hour < 10
+                || $fecha->hour > 20
+                || $fecha->dayOfWeek > 5
+                || $fecha->dayOfWeek == 0
+                || $fecha->weekOfYear != now()->weekOfYear
+            ) {
+                $this->addError('fecha', 'Solo puedes reservar de lunes a viernes de esta semana entre las 10:00 y las 20:00.');
+                return;
+            }
+
+            if (Reserva::where('pista_id', $this->pista_id)->where('fecha_hora', $fecha)->exists()) {
+                $this->addError('pista', 'La pista ya está reservada para esa fecha y hora.');
+                return;
+            }
+
+            Reserva::create([
+                'user_id' => Auth::id(),
+                'pista_id' => $this->pista_id,
+                'fecha_hora' => $fecha,
+            ]);
+        } catch (InvalidFormatException $e) {
+            $this->addError('fecha', 'Formato de fecha incorrecto.');
         }
-
-        Reserva::create([
-            'user_id' => auth()->id(),
-            'pista_id' => $this->pista_id,
-            'fecha_hora' => $fecha,
-        ]);
     }
 
     public function anularReserva($reservaId)
@@ -82,17 +103,21 @@ new class extends Component
 ?>
 
 <div>
-    @error('error')
-        <div class="alert alert-danger">{{ $message }}</div>
-    @enderror
+    @if ($errors->any())
+        <div class="alert alert-danger">
+            <ul>
+                @foreach ($errors->all() as $error)
+                    <li>{{ $error }}</li>
+                @endforeach
+            </ul>
+        </div>
+    @endif
 
     <select class="form-select mb-3" wire:model.live="pista_id">
         @foreach ($this->pistas as $pista)
             <option value="{{ $pista->id }}">{{ $pista->nombre }}</option>
         @endforeach
     </select>
-
-    <button class="btn btn-sm btn-secondary mb-3" wire:click="$refresh">Actualizar</button>
 
     <table class="table">
         <thead>
@@ -111,22 +136,25 @@ new class extends Component
                     <td>{{ $h }}:00</td>
                     @for ($d = 0; $d < 5; $d++)
                         @php
-                        $fecha = now()->startOfWeek()->addHours($h)->addDays($d)->format('Y-m-d H:i');
+                        $fecha = now()->startOfWeek()->addHours($h)->addDays($d);
+                        $fechaStr = $fecha->format('Y-m-d H:i');
                         @endphp
                         <td>
-                            @if ($this->tablero[$fecha] === 'O')
+                            @if ($this->tablero[$fechaStr] === 'O')
                                 <span class="text-danger">Ocupado</span>
-                            @elseif ($this->tablero[$fecha])
+                            @elseif ($this->tablero[$fechaStr] !== null)
                                 <button
                                     class="btn btn-sm btn-warning"
-                                    wire:click="anularReserva({{ $this->tablero[$fecha] }})"
+                                    wire:click="anularReserva({{ $this->tablero[$fechaStr] }})"
                                 >
                                     Anular
                                 </button>
+                            @elseif ($fecha->lessThan(now()))
+                                <span class="text-muted">Pasado</span>
                             @else
                                 <button
                                     class="btn btn-sm btn-success"
-                                    wire:click="reservar('{{ $fecha }}')"
+                                    wire:click="reservar('{{ $fechaStr }}')"
                                 >
                                     Reservar
                                 </button>
